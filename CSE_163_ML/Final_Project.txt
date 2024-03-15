@@ -1,0 +1,181 @@
+#!pip install geopandas
+import geopandas as gpd
+import matplotlib.pyplot as plt
+import pandas as pd
+from shapely.geometry import Point
+from sklearn.model_selection import train_test_split
+from sklearn.tree import DecisionTreeRegressor
+from sklearn.model_selection import GridSearchCV
+from sklearn.metrics import mean_squared_error
+"""
+Aryan Sharma
+Archit Ganapule
+TA: Peter Xu
+6/5/23
+Final Project:
+  Topic: How Has Climate Change Impacted Different Fish Locations?
+
+  Purpose: This project's goal is to analyze the changes in fish locations
+      over time and find out if there's a correlation with the annual
+      temperature rise in the oceans over time. This program does this by
+      providing visual formats to view the data as well as by creating a ML
+      model that predicts latitude of a given fish species, temperature anomaly
+      (temperate departure from expected value) for a specific year, and other
+      factors. It then also tests the code, providing validity that the data
+      and ML model all behave as expected.
+
+  Oversimplifications: Since both of us aren't experts in this field, there
+      must have been factors that we missed and that may have had a slight
+      influence on the data.
+      On top of that, these findings and analysis have
+      all been done on datasets that are sparse in their
+      datapoints. So we made choices that we thought were the most
+      encompassing and important.
+"""
+
+"""
+This code cell reads in the file containing data for all the countries
+"""
+world_map = gpd.read_file('/content/ne_110m_admin_0_countries.shp')
+world_map
+
+"""
+This code cell reads in the file containing data for all the locations
+of different fish species. It filters it down to the expected columns and
+allows for plotting.
+"""
+fish = pd.read_csv('/content/fish_locations.csv', encoding='latin-1')
+fish = fish[['Species', 'Longitude', 'Latitude', 'Sample_date',
+             'FAO_zone', 'Ecosystem']]
+fish['geometry'] = [Point(-long, lat) for long, lat in
+                    zip(fish['Longitude'], fish['Latitude'])]
+fish = gpd.GeoDataFrame(fish, geometry='geometry')
+fish.crs = world_map.crs
+fish
+
+"""
+This code cell reads in the file containing data for the temperature anomalies
+and filters it to our focus columns.
+"""
+ocean = pd.read_csv('/content/ocean_anomalies.csv', encoding='latin-1')
+ocean = ocean[['Year', 'Annual anomaly']]
+ocean = ocean.astype({'Year': 'string'})
+ocean
+
+"""
+The next two code cells inclduing this one are focused on plotting
+and visualizing the data. This code cell plots the change in the annual
+anomalies (temperature change from expected) over time. This plots
+title is "Change of Annual Anomaly over Time" while its x-axis
+is the Year and y-axis is the Annual Anomaly (in farenheit)
+"""
+fig, ax = plt.subplots(1, figsize=(15, 7))
+anomaly_plot = ocean.astype({'Year': 'int'})
+anomaly_plot.plot(ax=ax, x="Year", y="Annual anomaly")
+plt.title("Change of Annual Anomaly over Time")
+plt.xlabel('Year')
+plt.ylabel('Annual Anomaly (Farenheit)')
+
+"""
+This code cell compiles the fish and ocean datasets and plots a map of the
+world, using the world data. After which, it plots a specifed specie's
+(salmo_trutta) locations overlayed on the world map. The resulting figure's
+title is "Salmo_Trutta Location Over Time"
+"""
+fish_ocean = ocean.merge(fish, left_on='Year', right_on='Sample_date',
+                         how='right')
+fish_ocean = gpd.GeoDataFrame(fish_ocean)
+
+focean_ML = fish_ocean[['Year', 'Annual anomaly', 'Species', 'Latitude',
+                        'FAO_zone', 'Ecosystem']]
+
+fish_ocean = fish_ocean[['Year', 'Annual anomaly', 'Species', 'Longitude',
+                         'Latitude', 'geometry']]
+
+specie = fish_ocean[fish_ocean['Species'] == 'Salmo_trutta'].dropna(
+         ).reset_index().drop(columns=['index', 'Species', 'Annual anomaly'])
+
+fig, ax = plt.subplots(1, figsize=(15, 7))
+world_map.plot(ax=ax)
+specie.plot(ax=ax, column='Year', legend=True, markersize=100)
+plt.title("Salmo_Trutta Location Over Time")
+
+'''
+This section creates the ML model used to predict fish latitudes, using a
+linear regressor. It pre-processes data into features (species,
+temperature anomaly, FAO_zone, and ecosystem) and labels
+(corresponding latitudes). It uses Grid Search with cross-validation to find
+the best parameters, then trains the model with those parameters and prints its
+accuracy.
+'''
+
+# Cleans the dataset by removing nan values and only including related columns.
+clean = focean_ML.dropna().reset_index().drop(columns='index')
+
+# Creates one-hot encodings for the three string-based features (Species name,
+# fishing zone (FAO_zone) and Ecosystem). Also creates a series for the integer
+# based feature, temperature anomaly.
+one_hot = pd.get_dummies(clean['Species'])
+two_hot = pd.get_dummies(clean['FAO_zone'])
+three_hot = pd.get_dummies(clean['Ecosystem'])
+int_features = clean[['Annual anomaly']]
+
+# Combines the features together, creates the labels series (Latitude), and
+# does a train/test split.
+features = pd.concat([one_hot, two_hot, three_hot,
+                      int_features], axis=1)
+labels = clean[['Latitude']]
+X_train, X_test, y_train, y_test = train_test_split(features, labels,
+                                                    test_size=0.2)
+
+# Conducts a Grid Search with 5-fold cross validation on a regressor model with
+# the given parameter options. Prints the best parameters and the resultant
+# accuracy score.
+model_coords_R = DecisionTreeRegressor()
+params = {'max_depth': [110, 120, 125],
+          'min_samples_leaf': [1, 2, 3],
+          'min_samples_split': [2, 3, 4],
+          }
+
+GS = GridSearchCV(estimator=model_coords_R, param_grid=params, cv=5,
+                  n_jobs=-1, verbose=True)
+GS.fit(X_train, y_train)
+print('\nBest Parameters:', GS.best_params_)
+print('Best Score:', GS.best_score_, '\n')
+
+
+# Creates a regressor with the parameters found from GS. Trains it on the data
+# from the earlier split, then records training and testing predictions.
+best_depth = GS.best_params_['max_depth']
+best_leaf = GS.best_params_['min_samples_leaf']
+best_split = GS.best_params_['min_samples_split']
+model_coords_R = DecisionTreeRegressor(max_depth=best_depth,
+                                       min_samples_leaf=best_leaf,
+                                       min_samples_split=best_split)
+model_coords_R.fit(X_train, y_train)
+y_train_pred = model_coords_R.predict(X_train)
+y_test_pred = model_coords_R.predict(X_test)
+
+
+# Prints the MSE and accuracy for both the training and testing data. Testing
+# scores show how accurate the model is for new information.
+print('\033[4m\033[1mTRAINING EVALUATION\033[0m\033[0m')
+print('MSE: ' + str(mean_squared_error(y_train, y_train_pred)))
+print('Accuracy Score: ' + str(model_coords_R.score(X_train, y_train)) + "\n")
+print('\033[4m\033[1mTEST EVALUATION\033[0m\033[0m')
+print('MSE: ' + str(mean_squared_error(y_test, y_test_pred)))
+print('Accuracy Score: ' + str(model_coords_R.score(X_test, y_test)))
+
+# Testing code cell
+print("\033[4m\033[1mCode Testing\033[0m\033[0m\n")
+# Preprocessing Tests
+print("\033[4mPreprocessing Tests\033[0m")
+print('Compiled Data Test: ' + str(len(fish_ocean.index) == 10665))
+print('Plotted Data (Salmo_Trutta) Test: ' + str(len(fish_ocean[
+      fish_ocean['Species'] == 'Salmo_trutta'].index) == 363) + "\n")
+# ML tests
+print("\033[4mML Tests\033[0m")
+print('Cleaned Data Test: ' + str((len(clean) == 4855) & (
+      len(clean.columns) == 6)))
+print('Nan values Test: ' + str(not clean.isnull().values.any()))
+print('Accuracy Test: ' + str(model_coords_R.score(X_test, y_test) > 0.95))
